@@ -1,6 +1,6 @@
 #
 # The final version of frame_restorer.py for LADA REALTIME PLAYER V1.2
-#
+# This version includes a fix for the bug where mosaic processing failed to apply properly/leaked.
 # With this fix, Actual real-time playback is now possible, except for scenes with excessive/too much mosaic. 
 #
 import logging
