@@ -575,6 +575,69 @@ class HighlyOptimizedFrameRestorer:
             f"  batch_size: {self.batch_size}\n"
             f"  診断: {'有効' if enable_diagnostics else '無効'}"
         )
+        
+    def force_reset(self):
+        """【新規】強制リセット - シーク前に呼び出す"""
+        print("[RESTORER] 🔄 強制リセット開始")
+        
+        # 1. 全フラグを即座にFalseに
+        self.stop_requested = True
+        self.clip_restoration_threads_should_be_running = False
+        self.frame_restoration_thread_should_be_running = False
+        self.clip_ordering_thread_should_be_running = False
+        
+        # 2. 全キューにダミーデータを送信してアンブロック
+        for _ in range(self.parallel_clips + 5):
+            try:
+                self.mosaic_clip_queue.put_nowait(None)
+            except queue.Full:
+                pass
+        
+        try:
+            self.unordered_clips_queue.put_nowait(None)
+            self.restored_clip_queue.put_nowait(None)
+            self.frame_detection_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        
+        # 3. 全スレッドの終了を同期的に待機（最大2秒）
+        all_threads = (
+            self.clip_restoration_threads + 
+            [self.clip_ordering_thread, self.frame_restoration_thread]
+        )
+        
+        for thread in all_threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    print(f"⚠️ スレッド {thread.name} が停止しませんでした")
+        
+        # 4. 全キューをクリア
+        threading_utils.empty_out_queue(self.mosaic_clip_queue, "mosaic_clip_queue")
+        threading_utils.empty_out_queue(self.unordered_clips_queue, "unordered_clips_queue")
+        threading_utils.empty_out_queue(self.restored_clip_queue, "restored_clip_queue")
+        threading_utils.empty_out_queue(self.frame_detection_queue, "frame_detection_queue")
+        threading_utils.empty_out_queue(self.frame_restoration_queue, "frame_restoration_queue")
+        
+        # 5. カウンタと状態を完全リセット
+        with self.clip_counter_lock:
+            self.clip_counter = 0
+        with self.workers_finished_lock:
+            self.workers_finished_count = 0
+        self.next_expected_clip_id = 0
+        self.eof = False
+        
+        # 6. スレッドリストをクリア
+        self.clip_restoration_threads.clear()
+        self.clip_ordering_thread = None
+        self.frame_restoration_thread = None
+        
+        # 7. GPU完全解放
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        
+        print("[RESTORER] ✅ 強制リセット完了")
 
     def _calculate_optimal_workers(self):
         if torch.cuda.is_available():
@@ -1179,3 +1242,7 @@ class HighlyOptimizedFrameRestorer:
 
 # 後方互換性
 OptimizedFrameRestorer = HighlyOptimizedFrameRestorer
+
+# 【追加】エイリアスにもforce_reset()を確実に持たせる
+if not hasattr(OptimizedFrameRestorer, 'force_reset'):
+    print("⚠️ force_reset()がエイリアスに存在しません - 修正が必要")
